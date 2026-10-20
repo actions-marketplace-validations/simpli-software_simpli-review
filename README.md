@@ -23,6 +23,53 @@ On each PR it:
 
 ## Add it to a repository
 
+### Quick setup
+
+From the root of the repository you want reviewed (you need `python` 3.12 or later and, for the extras, the
+[GitHub CLI](https://cli.github.com) signed in with `gh auth login`):
+
+```bash
+pipx install git+https://github.com/simpli-software/simpli-review   # or: uvx --from git+https://github.com/simpli-software/simpli-review simpli-review init
+simpli-review init
+```
+
+Prefer a form? The [Simpli Gatehouse config builder](https://simpli-software.github.io/simpli-gatehouse/) builds the same files in your browser, pinned to the latest release.
+
+It asks a few questions and Enter accepts the default shown in brackets:
+
+| Question | Default |
+|---|---|
+| Review heading name | `Code review` |
+| Strictness 1-3 | `2` |
+| Block merges on `none`, `P0` or `P1` | `P0` |
+| Built-in checks `pr-template` and `declared-scope`: `off`, `warning` or `error` | `warning` |
+| Add the monthly AI scan (first Monday of the month) | yes |
+| Scan budget, in tokens | `3,000,000` |
+| Ignore patterns | the built-in list plus lockfiles and build directories found in the repository |
+| Extra instructions, one line | none |
+
+Then it writes `.github/workflows/code-review.yml`, `.github/workflows/ai-scan.yml` (if you chose the scan)
+and `.simpli-review/config.json` (only the fields that differ from the defaults). The `simpli-review` action is pinned by
+commit hash and release tag, looked up through GitHub's public API for the latest release (a token is sent only if
+`GITHUB_TOKEN` or `GH_TOKEN` is set). If the lookup fails it writes `<commit-sha> # v1.x` and prints how to fill it in. With
+`gh` available it creates the `re-review`, `review-override` and `no-review` labels (existing ones are left alone;
+without `gh` it prints the commands) and checks that the `ANTHROPIC_API_KEY` secret exists. It never reads, prints or
+sets a secret value: if the secret is missing it prints `gh secret set ANTHROPIC_API_KEY` for you to run. Finally it prints a
+checklist. Only maintainers should add the `review-override` label, since it lets a PR through a blocking review.
+
+| Flag | Meaning |
+|---|---|
+| `--yes`, `--non-interactive` | Take every default without asking. |
+| `--force` | Overwrite files that already exist. Without it nothing is overwritten: a short diff is shown and the file is skipped. |
+| `--dry-run` | Print what would be written; change nothing. |
+| `--no-labels` | Do not create labels (and do not write `disabledLabels`, which makes the `no-review` label work). |
+| `--ref owner/repo@sha` | Pin this exact build instead of the latest release. |
+| `--repo PATH` | Repository root, default the current directory. |
+
+The manual steps follow, if you prefer to do it by hand.
+
+### Manual setup
+
 1. Add a secret named `ANTHROPIC_API_KEY`, at repository or organization level.
 2. Copy [examples/code-review.yml](examples/code-review.yml) to `.github/workflows/code-review.yml`,
    set `name:` to the heading you want on the summary comment, and replace `<commit-sha>` in the
@@ -89,7 +136,7 @@ Create `.simpli-review/` in the reviewed repository. Every field is optional.
 | `blockOn` | `none` (default), `P0` or `P1`. Fail the Actions check when a new or still-open finding is at or above this severity. See [Block merges](#block-merges). |
 | `overrideLabel` | PR label that skips blocking. Default `review-override`. |
 | `builtinChecks` | Mode of each built-in pre-merge check: `{"pr-template": "warning", "declared-scope": "warning"}`. Each is `off`, `warning` (default) or `error`. |
-| `scan` | Limits for the weekly full-repository scan: `maxTurns`, `effort`, `maxInputTokens`, `maxIssues`, `minSeverity`. See [AI scan](#ai-scan-weekly-full-repository-security-scan). |
+| `scan` | Limits for the scheduled full-repository scan: `maxTurns`, `effort`, `maxInputTokens`, `maxIssues`, `minSeverity`. See [AI scan](#ai-scan-scheduled-full-repository-security-scan). |
 | `checks` | Your own pre-merge checks, up to 20: `{"name", "instructions", "mode"}`. Name up to 50 characters, instructions up to 1000, mode `off`, `warning` (default) or `error`. See [Pre-merge checks](#pre-merge-checks). |
 
 - `rules.md`: free-form team rules, appended to `instructions`.
@@ -158,10 +205,10 @@ code, not by the model: where (`In <path> around line <n>`), severity and title,
 suggested fix when there is one, and a closing "Then verify" step. Copy it into a coding agent. Emails,
 token-like strings and HTML comments are removed first, and each block is capped in length.
 
-## AI scan: weekly full-repository security scan
+## AI scan: scheduled full-repository security scan
 
 `mode: scan` reviews the whole repository at the checked-out commit instead of a pull request: no diff, a
-security and data-integrity pass over the code as it stands. It is meant to run on a weekly schedule, plus by
+security and data-integrity pass over the code as it stands. It is meant to run on a schedule (the example: the first Monday of each month), plus by
 hand, and it opens a few GitHub issues for the worst findings. The default stays PR review.
 
 It reuses the review machinery (agent loop, read-only tools, code graph, prompt caching, `rules`,
@@ -178,8 +225,8 @@ evidence are dropped. Secret-looking values are removed from everything the scan
 ### Set it up
 
 1. Add the `ANTHROPIC_API_KEY` secret (as for reviews).
-2. Copy [examples/ai-scan.yml](examples/ai-scan.yml) to `.github/workflows/ai-scan.yml`. It runs Mondays at
-   09:17 UTC and from **Actions > AI scan > Run workflow**, where `effort` and `max-turns` can be overridden.
+2. Copy [examples/ai-scan.yml](examples/ai-scan.yml) to `.github/workflows/ai-scan.yml`. It checks every Monday at
+   09:17 UTC and runs on the first Monday of the month, and from **Actions > AI scan > Run workflow**, where `effort` and `max-turns` can be overridden.
    Pin the `simpli-review` step (`<commit-sha>` in the template) to the commit hash of a
    release that includes scan mode and keep the version in the trailing comment. The workflow needs only `contents: read` and `issues: write`.
 3. Run it by hand once and read the spend (below) before you keep the schedule.
@@ -278,7 +325,7 @@ You bring your own Anthropic API key, so the only bill is the one Anthropic send
 reviewer uses. There is no per-seat or per-repository fee.
 
 - **Model:** default `claude-opus-5-5` with `effort: high`. Server-side refusal fallback is on.
-- **Turns:** at most 40 investigation turns (scans: see [AI scan](#ai-scan-weekly-full-repository-security-scan)). Prompt caching keeps re-sent context cheap.
+- **Turns:** at most 40 investigation turns (scans: see [AI scan](#ai-scan-scheduled-full-repository-security-scan)). Prompt caching keeps re-sent context cheap.
 - **What a review costs** depends on PR size and how much the model reads. The job log prints token
   usage per review. Set `effort: medium` or lower `max-turns` to spend less.
 - **Large diffs:** above 250 KB are listed but not inlined; the model reads those files with tools

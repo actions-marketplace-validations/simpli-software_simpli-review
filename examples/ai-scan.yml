@@ -1,4 +1,5 @@
-# Weekly full-repository AI security scan. Copy to .github/workflows/ai-scan.yml in each repository.
+# Monthly full-repository AI security scan (first Monday of the month). Copy to .github/workflows/ai-scan.yml
+# in each repository, or run `simpli-review init`, which writes this file with the pin filled in.
 # Needs one secret: ANTHROPIC_API_KEY (repo or organization secret).
 #
 # What it does: reads the whole repository at the latest commit of the default branch, opens at most
@@ -17,7 +18,9 @@ name: AI scan
 
 on:
   schedule:
-    - cron: "17 9 * * 1" # Mondays 09:17 UTC (off the hour, when scheduled runs are least delayed)
+    # Every Monday 09:17 UTC; the `when` job lets only the first Monday of the month through.
+    # Cron cannot say "first Monday": "1-7 * 1" means day 1-7 OR Monday.
+    - cron: "17 9 * * 1"
   workflow_dispatch:
     inputs:
       effort:
@@ -31,9 +34,7 @@ on:
         default: ""
         type: string
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 # Two scans never overlap: a manual run waits for the scheduled one instead of cancelling it.
 concurrency:
@@ -41,7 +42,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  when:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      run: ${{ steps.day.outputs.run }}
+    steps:
+      - name: First Monday of the month, or a manual run
+        id: day
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "schedule" ] || [ "$(date -u +%-d)" -le 7 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   scan:
+    needs: when
+    if: needs.when.outputs.run == 'true'
+    permissions:
+      contents: read
+      issues: write
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -4,6 +4,7 @@
     simpli-review local --base main review the current branch, print the result
     simpli-review local --base main --json   same, as one JSON object (for agents)
     simpli-review scan              full-repository AI security scan of the checked-out commit (see scan.py)
+    simpli-review init              one-command setup of workflows, config and labels (see init.py)
 
 Settings come from the environment (action inputs arrive as INPUT_*):
   INPUT_NAME     heading on the summary comment          (required in github mode)
@@ -473,7 +474,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     sc.add_argument("--dry-run", action="store_true", help="do not open issues; say which would be opened")
     sc.add_argument("--repo", default=".")
+    ini = sub.add_parser("init", help="set up simpli-review in the repository in the current directory")
+    ini.add_argument("--yes", "--non-interactive", action="store_true", dest="yes",
+                     help="take every default without asking")  # fmt: skip
+    ini.add_argument("--force", action="store_true", help="overwrite files that already exist")
+    ini.add_argument("--dry-run", action="store_true", help="print what would be written, change nothing")
+    ini.add_argument("--no-labels", action="store_true", help="do not create (or print commands for) labels")
+    ini.add_argument(
+        "--ref", metavar="OWNER/REPO@SHA", help="pin this exact build instead of the latest release"
+    )
+    ini.add_argument("--repo", default=".", help="repository root (default: the current directory)")
     args = parser.parse_args(argv)
+    if args.mode == "init":
+        from simpli_review.init import InitOptions, run_init
+
+        return run_init(
+            InitOptions(
+                root=Path(args.repo),
+                yes=args.yes,
+                force=args.force,
+                dry_run=args.dry_run,
+                no_labels=args.no_labels,
+                ref=args.ref,
+            )
+        )
     if args.mode == "github":
         return github_main(args.dry_run)
     if args.mode == "scan":

@@ -17,7 +17,7 @@ body:
     id: mode
     attributes:
       label: Mode
-      options: [review (pull request), scan (weekly), local]
+      options: [review (pull request), scan, local]
     validations:
       required: true
   - type: textarea
