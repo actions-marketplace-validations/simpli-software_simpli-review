@@ -1,0 +1,61 @@
+# Copy to .github/workflows/code-review.yml in each repository to review.
+# Needs one secret: ANTHROPIC_API_KEY (repo or organization secret).
+# Replace <owner> and <commit-sha> with the account that hosts the action and the full commit hash
+# of the release you want, and keep the version in the trailing comment (see README, "Add it to a
+# repository"). Pin by hash, never by tag.
+#
+# A review runs when a PR is opened, reopened or marked ready for review.
+# To ask for another review, add the `re-review` label to the PR. The reviewer
+# removes the label when it finishes, so it can be added again. Create the
+# label once per repository (any colour). Labels are used instead of comment
+# triggers because an issue_comment trigger starts a (skipped) Actions run on
+# every comment on every PR.
+#
+# Optional merge blocking: set "blockOn" in .simpli-review/config.json and make the
+# job (named "review" below) a required status check. A PR with the
+# `review-override` label (config "overrideLabel") is let through. The label is read
+# from the PR the reviewer fetches, so the permissions below are enough. Adding that
+# label does not start a review; add `re-review` afterwards to refresh the check.
+name: Code review
+
+on:
+  pull_request:
+    # Add `synchronize` here AND "push" to autoReview in .simpli-review/config.json
+    # to review every push; otherwise a push would only cancel a running review.
+    types: [opened, reopened, ready_for_review, labeled]
+    # Docs-only PRs are not reviewed (this also means a re-review label on a
+    # docs-only PR does nothing).
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    # Skip drafts, and skip `labeled` events for any label other than
+    # `re-review`. If you set "reReviewLabel" in .simpli-review/config.json,
+    # use the same name here.
+    if: >-
+      github.event.pull_request.draft == false &&
+      (github.event.action != 'labeled' || github.event.label.name == 're-review')
+    # Job-level, so a skipped run never joins the group and cancels anything.
+    concurrency:
+      group: code-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The reviewer reads the code at the PR's head commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 50          # some history for the git_history tool
+          persist-credentials: false
+      - uses: <owner>/simpli-review@<commit-sha> # v1.x
+        with:
+          name: Code Review       # summary heading
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

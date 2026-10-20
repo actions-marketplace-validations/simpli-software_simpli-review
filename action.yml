@@ -1,0 +1,68 @@
+name: AI code review
+description: Reviews a pull request with whole-codebase context, or (mode scan) scans the whole repository for security problems.
+branding:
+  icon: eye
+  color: purple
+
+inputs:
+  mode:
+    description: "review (default): review the pull request. scan: full-repository AI security scan of the checked-out commit; opens issues and writes a spend report (see README, AI scan)."
+    default: review
+  name:
+    description: Heading on the summary comment (your product/bot name). Required in review mode - nothing is hard-coded.
+    required: false
+    default: ""
+  anthropic-api-key:
+    description: Anthropic API key (store it as a repository or organization secret).
+    required: true
+  github-token:
+    description: Token used to read the PR and post the review (review), or to open issues (scan).
+    default: ${{ github.token }}
+  mention:
+    description: Legacy comment trigger text (default "@" + slugified name). New workflows re-run by adding the re-review label instead.
+    default: ""
+  model:
+    description: Claude model.
+    default: claude-opus-5-5
+  effort:
+    description: "Reasoning effort (low | medium | high | xhigh | max). Empty: high for reviews, the scan.effort config value (default high) for scans."
+    default: ""
+  max-turns:
+    description: "Upper bound on investigation turns. Empty: 40 for reviews, the scan.maxTurns config value (default 60) for scans."
+    default: ""
+  dry-run:
+    description: Print the review (or the issues a scan would open) in the job log instead of posting it.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: "3.12"
+    - name: Install the reviewer
+      shell: bash
+      run: python -m pip install --quiet "${{ github.action_path }}"
+    - name: Review or scan
+      shell: bash
+      env:
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_MENTION: ${{ inputs.mention }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_EFFORT: ${{ inputs.effort }}
+        INPUT_MAX_TURNS: ${{ inputs.max-turns }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        case "$INPUT_MODE" in
+          review) cmd="github" ;;
+          scan) cmd="scan" ;;
+          *) echo "::error::mode must be review or scan"; exit 2 ;;
+        esac
+        if [ "$INPUT_DRY_RUN" = "true" ]; then
+          simpli-review "$cmd" --dry-run
+        else
+          simpli-review "$cmd"
+        fi
