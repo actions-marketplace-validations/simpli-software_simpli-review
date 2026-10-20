@@ -640,7 +640,7 @@ def test_example_workflow_is_hardened():
     for step in (checkout, scan, upload):
         assert not re.search(r"@v\d", step["uses"]), f"{step['uses']} is referenced by tag"
     assert checkout["with"]["persist-credentials"] is False and checkout["with"]["fetch-depth"] > 1
-    assert scan["with"]["mode"] == "scan" and scan["uses"].startswith("<owner>/simpli-review@")
+    assert scan["with"]["mode"] == "scan" and scan["uses"] == "simpli-software/simpli-review@<commit-sha>"
     for step in (checkout, upload):
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", step["uses"])
     assert upload["with"]["name"] == "simpli-review-scan"
@@ -685,7 +685,7 @@ def test_every_workflow_reference_is_pinned_by_hash_or_a_placeholder():
             if not m:
                 continue
             ref, comment = m.group(1), m.group(2) or ""
-            assert re.fullmatch(r"[\w./<>-]+@([0-9a-f]{40}|<commit-sha>)", ref), f"{path.name}: {ref}"
+            assert re.fullmatch(r"[\w./-]+@([0-9a-f]{40}|<commit-sha>)", ref), f"{path.name}: {ref}"
             assert re.search(r"# v\d", comment), f"{path.name}: {ref} has no version comment"
 
 

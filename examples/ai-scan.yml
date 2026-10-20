@@ -7,12 +7,11 @@
 # artifact. See README.md, "AI scan". Cost is capped by `scan.maxInputTokens` and `scan.maxTurns` in
 # .simpli-review/config.json; run it by hand first (Actions > AI scan > Run workflow) to see the real spend.
 #
-# Pin the actions by commit hash. The simpli-review line below is a placeholder: replace <owner> with
-# the account that hosts the action and <commit-sha> with the commit hash of a release that has scan
-# mode (look the hash up with
-#   gh api repos/<owner>/simpli-review/git/ref/tags/<tag> --jq '.object.sha'
+# Pin the actions by commit hash. The simpli-review line below carries a placeholder: replace
+# <commit-sha> with the commit hash of a release that has scan mode (look the hash up with
+#   gh api repos/simpli-software/simpli-review/git/ref/tags/<tag> --jq '.object.sha'
 # and if that returns an annotated tag, resolve it with
-#   gh api repos/<owner>/simpli-review/git/tags/<sha> --jq '.object.sha' )
+#   gh api repos/simpli-software/simpli-review/git/tags/<sha> --jq '.object.sha' )
 # and keep the version in the trailing comment. Dependabot can update hash-pinned actions.
 name: AI scan
 
@@ -52,7 +51,7 @@ jobs:
           fetch-depth: 200 # history for the git_history tool
           persist-credentials: false
       - name: Scan
-        uses: <owner>/simpli-review@<commit-sha> # v1.x
+        uses: simpli-software/simpli-review@<commit-sha> # v1.x
         with:
           mode: scan
           name: AI scan # heading of the report

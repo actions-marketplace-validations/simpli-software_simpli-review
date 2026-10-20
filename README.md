@@ -1,3 +1,6 @@
+> Part of **Simpli Gatehouse**, the review and security gates from Simpli Software.
+> Its sibling, [simpli-software/simpli-guard](https://github.com/simpli-software/simpli-guard), scans every pull request for security problems.
+
 # simpli-review
 
 A pull-request reviewer for GitHub with knowledge of the whole codebase, built on Claude. It runs as a
@@ -22,8 +25,8 @@ On each PR it:
 
 1. Add a secret named `ANTHROPIC_API_KEY`, at repository or organization level.
 2. Copy [examples/code-review.yml](examples/code-review.yml) to `.github/workflows/code-review.yml`,
-   set `name:` to the heading you want on the summary comment, and replace `<owner>` and `<commit-sha>`
-   in the `uses:` line with the account that hosts this action and the full commit hash of the release you
+   set `name:` to the heading you want on the summary comment, and replace `<commit-sha>` in the
+   `uses:` line (`simpli-software/simpli-review`) with the full commit hash of the release you
    want. Keep the version in the trailing comment. Pin by hash, not by tag, so a moved tag cannot change
    what runs in your pipeline.
 3. Create a label named `re-review` in the repository (any colour). Open a PR.
@@ -177,7 +180,7 @@ evidence are dropped. Secret-looking values are removed from everything the scan
 1. Add the `ANTHROPIC_API_KEY` secret (as for reviews).
 2. Copy [examples/ai-scan.yml](examples/ai-scan.yml) to `.github/workflows/ai-scan.yml`. It runs Mondays at
    09:17 UTC and from **Actions > AI scan > Run workflow**, where `effort` and `max-turns` can be overridden.
-   Pin the `simpli-review` step (`<owner>` and `<commit-sha>` in the template) to the commit hash of a
+   Pin the `simpli-review` step (`<commit-sha>` in the template) to the commit hash of a
    release that includes scan mode and keep the version in the trailing comment. The workflow needs only `contents: read` and `issues: write`.
 3. Run it by hand once and read the spend (below) before you keep the schedule.
 
@@ -300,9 +303,16 @@ Facts, not a ranking:
 
 ## Support
 
-This project is maintained on a best-effort basis with no SLA. Issues are welcome (use the templates).
-Pull requests are not accepted for now; see [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities
-privately, as described in [SECURITY.md](SECURITY.md).
+Best effort, no SLA. Issues are welcome (bug reports and feature requests, using the templates). To
+report a vulnerability, see [SECURITY.md](SECURITY.md) and do not open a public issue.
+
+Pull requests: for the first 90 days after the public launch this project takes issues only, and outside
+pull requests are not accepted yet. After that they are accepted with a Developer Certificate of Origin
+sign-off on every commit (`git commit -s`, see <https://developercertificate.org>) and no CLA. CI on fork
+pull requests runs on `pull_request` without secrets, workflows never use `pull_request_target`, a
+maintainer approves CI runs for first-time contributors, and every outside pull request gets a senior
+security review before merge, because the action runs inside your CI with your API keys. Details are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Develop
 
