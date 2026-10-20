@@ -29,6 +29,7 @@ from simpli_review.scan import (
 )
 from simpli_review.scan_issues import (
     LABEL,
+    LABEL_DESCRIPTION,
     fingerprint,
     issue_body,
     issue_title,
@@ -451,7 +452,8 @@ def test_publish_creates_the_label_and_issues_and_survives_failures():
     plan = plan_issues(_findings(2), [], ScanConfig())
     gh = FakeGH()
     publish(gh, plan, server="https://github.com", repo="o/r", sha=SHA, files=set())  # type: ignore[arg-type]
-    assert gh.labels == [("ai-scan", "5319e7", "Found by the weekly AI security scan")]
+    assert gh.labels == [("ai-scan", "5319e7", "Found by the scheduled AI security scan")]
+    assert len(LABEL_DESCRIPTION) <= 100  # GitHub's limit for a label description
     assert [c["labels"] for c in gh.created] == [["ai-scan"], ["ai-scan"]]
     assert [(a.status, a.number) for a in plan.actions] == [("created", 101), ("created", 102)]
 
@@ -632,9 +634,14 @@ def test_example_workflow_is_hardened():
     on = wf.get("on", wf.get(True))
     assert on["schedule"] == [{"cron": "17 9 * * 1"}]
     assert set(on["workflow_dispatch"]["inputs"]) == {"effort", "max-turns"}
-    assert wf["permissions"] == {"contents": "read", "issues": "write"}
+    # Monthly: cron fires every Monday, the `when` job lets only the first Monday (or a manual run) through.
+    assert wf["permissions"] == {}
     assert wf["concurrency"]["group"] and wf["concurrency"]["cancel-in-progress"] is False
+    gate = wf["jobs"]["when"]
+    assert "permissions" not in gate and gate["outputs"]["run"]
     job = wf["jobs"]["scan"]
+    assert job["needs"] == "when" and "needs.when.outputs.run" in job["if"]
+    assert job["permissions"] == {"contents": "read", "issues": "write"}
     assert job["timeout-minutes"] == 45
     checkout, scan, upload = job["steps"]
     for step in (checkout, scan, upload):

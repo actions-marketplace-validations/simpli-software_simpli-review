@@ -5,7 +5,8 @@ repository (scan_map.py), investigates with the same read-only tools and agent l
 that each cite file:line evidence and a confidence. Findings are filtered, written to a report with the
 token usage and an estimated cost, and the worst few become GitHub issues (scan_issues.py).
 
-Meant for a weekly schedule. Cost is a first-class output: see scan_report.py and pricing.py.
+Meant for a schedule (the example: first Monday of the month).
+Cost is a first-class output: see scan_report.py and pricing.py.
 """
 
 from __future__ import annotations

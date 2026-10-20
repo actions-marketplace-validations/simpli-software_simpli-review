@@ -96,7 +96,7 @@ Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class ScanConfig(_Model):
-    """`scan` block: limits for the weekly full-repository scan (`simpli-review scan`)."""
+    """`scan` block: limits for the scheduled full-repository scan (`simpli-review scan`)."""
 
     max_turns: int = Field(default=60, ge=1, le=500, alias="maxTurns")
     effort: Effort = "high"

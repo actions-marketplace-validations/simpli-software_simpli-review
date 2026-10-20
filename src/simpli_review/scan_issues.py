@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 LABEL = "ai-scan"
 LABEL_COLOR = "5319e7"
-LABEL_DESCRIPTION = "Found by the weekly AI security scan"
+LABEL_DESCRIPTION = "Found by the scheduled AI security scan"
 TITLE_PREFIX = "[AI scan] "
 SCAN_MARKER = "<!-- simpli-review:scan"
 SAME_FINDING = 0.6  # Jaccard over title words, same file (the PR reviewer uses the same threshold)

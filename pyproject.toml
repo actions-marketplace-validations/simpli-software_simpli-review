@@ -38,6 +38,10 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# YAML text that mirrors examples/*.yml, kept verbatim.
+"src/simpli_review/init_templates.py" = ["E501"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true

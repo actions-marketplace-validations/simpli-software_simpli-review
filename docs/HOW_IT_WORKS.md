@@ -39,7 +39,7 @@ is confined to the checked-out repository.
 ## Scan mode
 
 `simpli-review scan` (action input `mode: scan`) reviews the whole repository at the checked-out commit for
-security and data-integrity problems, on a weekly schedule. It uses the same agent loop, read-only tools, code
+security and data-integrity problems, on a schedule (monthly in the example workflow). It uses the same agent loop, read-only tools, code
 graph and context files as a review, with a security prompt and a prioritised repository map (entry points,
 authentication and tenancy modules, migrations) as the starting context.
 
