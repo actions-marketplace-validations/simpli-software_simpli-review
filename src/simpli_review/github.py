@@ -6,6 +6,7 @@ Auth is the workflow's GITHUB_TOKEN (needs `pull-requests: write`,
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 from urllib.parse import quote
@@ -21,6 +22,13 @@ class GitHubError(Exception):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(f"GitHub API {status}: {message}")
         self.status = status
+
+
+def _message(r: httpx.Response) -> str:
+    try:
+        return str(r.json().get("message", r.reason_phrase))
+    except (ValueError, AttributeError):
+        return r.reason_phrase
 
 
 class GitHub:
@@ -41,11 +49,7 @@ class GitHub:
     def _req(self, method: str, path: str, **kw: Any) -> Any:
         r = self.http.request(method, path, **kw)
         if r.status_code >= 400:
-            try:
-                msg = r.json().get("message", r.reason_phrase)
-            except ValueError:
-                msg = r.reason_phrase
-            raise GitHubError(r.status_code, str(msg))
+            raise GitHubError(r.status_code, _message(r))
         return r.json() if r.content else None
 
     def _paged(self, path: str, limit: int, **params: Any) -> list[dict[str, Any]]:
@@ -66,6 +70,29 @@ class GitHub:
     def pull(self, number: int) -> dict[str, Any]:
         result: dict[str, Any] = self._req("GET", f"/repos/{self.repo}/pulls/{number}")
         return result
+
+    def commit_exists(self, sha: str) -> None:
+        """Raise GitHubError unless this commit of the repository can be read."""
+        self._req("GET", f"/repos/{self.repo}/git/commits/{sha}")
+
+    def file_at(self, path: str, ref: str) -> str | None:
+        """Text of a file at a commit (contents API). None when the path is missing or not a plain file."""
+        url = f"/repos/{self.repo}/contents/{quote(path, safe='/')}"
+        r = self.http.get(url, params={"ref": ref})
+        if r.status_code == 404:
+            return None
+        if r.status_code >= 400:
+            raise GitHubError(r.status_code, _message(r))
+        data = r.json()
+        if not isinstance(data, dict) or data.get("type") != "file":
+            return None  # a directory, symlink or submodule
+        if data.get("encoding") == "base64":
+            return base64.b64decode(data.get("content") or "").decode("utf-8")
+        # Files over 1 MB come back without content; ask for the raw bytes.
+        raw = self.http.get(url, params={"ref": ref}, headers={"Accept": "application/vnd.github.raw+json"})
+        if raw.status_code >= 400:
+            raise GitHubError(raw.status_code, _message(raw))
+        return raw.content.decode("utf-8")
 
     def pull_files(self, number: int) -> list[dict[str, Any]]:
         return self._paged(f"/repos/{self.repo}/pulls/{number}/files", limit=3000)

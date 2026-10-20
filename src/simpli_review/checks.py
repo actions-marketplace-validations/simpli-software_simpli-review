@@ -20,13 +20,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from simpli_review.config import Config
+from simpli_review.config import TEMPLATE_PATH, Config
+from simpli_review.config_source import ConfigSourceError, DirSource, FileSource
 from simpli_review.models import CheckMode, CheckRow, ModelCheck
 from simpli_review.scrub import scrub
 
 PR_TEMPLATE = "pr-template"
 DECLARED_SCOPE = "declared-scope"
-TEMPLATE_PATH = ".github/pull_request_template.md"
 MAX_TEMPLATE_CHARS = 20_000
 MAX_REASON_CHARS = 200
 
@@ -58,13 +58,15 @@ class Section:
 # ---------- the pr-template check ----------
 
 
-def read_pr_template(repo_root: Path) -> str | None:
-    """The reviewed repository's PR template, or None when it has none."""
+def read_pr_template(source: FileSource | Path) -> str | None:
+    """The reviewed repository's PR template (from the trusted source), or None when it has none."""
+    if isinstance(source, Path):
+        source = DirSource(source)
     try:
-        text = (repo_root / TEMPLATE_PATH).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        text = source.read(TEMPLATE_PATH)
+    except ConfigSourceError:
         return None
-    return text[:MAX_TEMPLATE_CHARS]
+    return None if text is None else text[:MAX_TEMPLATE_CHARS]
 
 
 def parse_sections(text: str) -> list[Section]:
