@@ -30,7 +30,14 @@ import anthropic
 from simpli_review.agent_prompt import AgentTask, combined_details
 from simpli_review.blocking import evaluate, open_tasks, still_open_findings
 from simpli_review.checks import build_rows, read_pr_template
-from simpli_review.config import Config, load_config
+from simpli_review.config import TEMPLATE_PATH, Config, config_changes, load_config_from
+from simpli_review.config_source import (
+    CachingSource,
+    ConfigSourceError,
+    FileSource,
+    GitSource,
+    open_base_source,
+)
 from simpli_review.diff import FilePatch, parse_patch, split_unified_diff
 from simpli_review.github import GitHub, GitHubError
 from simpli_review.index import RepoIndex
@@ -61,6 +68,8 @@ from simpli_review.tools import Toolbox
 
 log = logging.getLogger("simpli_review")
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+PR_EVENTS = ("pull_request", "pull_request_target")
+PR_ACTIONS = {"opened", "reopened", "ready_for_review", "synchronize", "labeled"}
 EXIT_BLOCKED = 1  # the review finished and its result blocks the merge
 
 
@@ -124,18 +133,19 @@ def decide_trigger(
 
 
 def github_main(dry_run: bool) -> int:
+    loaded: list[Config] = []  # the settings the run used (from the base commit), if it got that far
     try:
-        return _github_run(dry_run)
+        return _github_run(dry_run, loaded)
     finally:
-        # Success, skip or failure: take the label off so it can be added again.
+        # Success, skip or failure: take the label off so it can be added again. The label name comes
+        # from the base settings; when those could not be read, the default name is used. Never the PR's.
         if not dry_run:
-            _remove_re_review_label()
+            _remove_re_review_label(loaded[0] if loaded else Config())
 
 
-def _remove_re_review_label() -> None:
+def _remove_re_review_label(config: Config) -> None:
     try:
         event = json.loads(Path(_env("GITHUB_EVENT_PATH")).read_text(encoding="utf-8"))
-        config = load_config(Path(_env("GITHUB_WORKSPACE", ".")))
         if not is_re_review_label(_env("GITHUB_EVENT_NAME"), event, config):
             return
         GitHub(_env("GITHUB_TOKEN"), _env("GITHUB_REPOSITORY")).remove_label(
@@ -146,7 +156,39 @@ def _remove_re_review_label() -> None:
         log.warning("could not remove the re-review label (%s)", type(e).__name__)
 
 
-def _github_run(dry_run: bool) -> int:
+def _load_trusted_config(source: FileSource) -> Config:
+    """The settings, rules, context files and PR template from `source`, all read up front so a
+    failure surfaces before the review starts (and the answers are cached for the run)."""
+    try:
+        config = load_config_from(source)
+    except (ValueError, TypeError) as e:  # bad JSON, bad values, undecodable text
+        raise ConfigSourceError(f"the review settings there are not valid ({type(e).__name__})") from e
+    for cf in config.files:
+        source.read(cf.path)
+    source.read(TEMPLATE_PATH)
+    return config
+
+
+def _settings_unavailable(gh: GitHub, name: str, number: int, why: str, dry_run: bool) -> int:
+    """Fail closed: without the trusted settings the review does not run, and the check fails."""
+    msg = " ".join(why.split())
+    print(f"::error::Review not run: {msg}")
+    if dry_run:
+        return 0
+    try:
+        gh.set_status_reaction(number, "confused", _env("INPUT_BOT_LOGIN") or "github-actions[bot]")
+        gh.upsert_issue_comment(
+            number, SUMMARY_MARKER,
+            f"{SUMMARY_MARKER}\n## {name}\n\nThe review did not run: the review settings could not be "
+            f"read from the base branch ({msg}). Settings are never taken from the pull request itself, "
+            "so this check fails until a review completes. Re-run the failed workflow job to try again.",
+        )  # fmt: skip
+    except GitHubError as e:
+        log.warning("could not post the failure notice (%s)", e.status)
+    return 1
+
+
+def _github_run(dry_run: bool, loaded: list[Config] | None = None) -> int:
     name = _env("INPUT_NAME")
     if not name:
         print("::error::The `name` input is required (it heads the summary comment).")
@@ -155,15 +197,45 @@ def _github_run(dry_run: bool) -> int:
     repo_root = Path(_env("GITHUB_WORKSPACE", "."))
     event_name = _env("GITHUB_EVENT_NAME")
     event = json.loads(Path(_env("GITHUB_EVENT_PATH")).read_text(encoding="utf-8"))
-    config = load_config(repo_root)
+    gh = GitHub(_env("GITHUB_TOKEN"), _env("GITHUB_REPOSITORY"))
 
-    number, manual, why = decide_trigger(event_name, event, config, mention)
-    if number is None:
+    # The settings that steer this review come from the PR's base commit, never from its head.
+    # Whether an event is a review trigger can depend on them (autoReview, reReviewLabel), so they are
+    # loaded first; a comment trigger does not depend on them and is filtered before any API call.
+    pr_raw: dict[str, Any] | None = None
+    if event_name in PR_EVENTS and event.get("action") in PR_ACTIONS:
+        number = int(event["pull_request"]["number"])
+        base_sha = str((event["pull_request"].get("base") or {}).get("sha") or "")
+    elif event_name == "issue_comment":
+        found, _, why = decide_trigger(event_name, event, Config(), mention)
+        if found is None:
+            print(f"Skipping: {why}.")
+            return 0
+        number, base_sha = found, ""
+    else:
+        _, _, why = decide_trigger(event_name, event, Config(), mention)
         print(f"Skipping: {why}.")
         return 0
+    try:
+        if event_name == "issue_comment":
+            pr_raw = gh.pull(number)
+            base_sha = str((pr_raw.get("base") or {}).get("sha") or "")
+        source = open_base_source(gh, repo_root, base_sha)
+        config = _load_trusted_config(source)
+    except (ConfigSourceError, GitHubError) as e:
+        return _settings_unavailable(gh, name, number, str(e), dry_run)
+    if loaded is not None:
+        loaded.append(config)
 
-    gh = GitHub(_env("GITHUB_TOKEN"), _env("GITHUB_REPOSITORY"))
-    pr_raw = gh.pull(number)
+    manual = event_name == "issue_comment"
+    if not manual:
+        found, manual, why = decide_trigger(event_name, event, config, mention)
+        if found is None:
+            print(f"Skipping: {why}.")
+            return 0
+
+    pr_raw = pr_raw or gh.pull(number)
+    config_source = f"{pr_raw['base']['ref']} @ {base_sha[:7]}"
     labels = [lb["name"] for lb in pr_raw.get("labels", [])]
     if not manual:
         ok, reason = config.should_review(
@@ -187,11 +259,13 @@ def _github_run(dry_run: bool) -> int:
         head_ref=pr_raw["head"]["ref"],
         head_sha=head_sha,
     )
+    files = gh.pull_files(number)
+    changes = config_changes(config, [p for f in files for p in (f["filename"], f.get("previous_filename"))])
     patches = [
         parse_patch(
             f["filename"], f.get("patch") or "", f.get("status", "modified"), f.get("previous_filename")
         )
-        for f in gh.pull_files(number)
+        for f in files
         if not config.ignored(f["filename"])
     ]
     if not patches:
@@ -202,7 +276,7 @@ def _github_run(dry_run: bool) -> int:
     if not dry_run:
         gh.set_status_reaction(number, "eyes", me)
     try:
-        outcome = _review(repo_root, pr, patches, config, gh, number)
+        outcome = _review(repo_root, pr, patches, config, gh, number, source=source)
     except (ReviewFailed, anthropic.APIError) as e:
         msg = " ".join((str(e) if isinstance(e, ReviewFailed) else api_error_text(e)).split())
         # A repo that relies on this check to block merges must not pass without a review.
@@ -236,6 +310,8 @@ def _github_run(dry_run: bool) -> int:
             decision,
             re_review_label=config.re_review_label,
             override_label=config.override_label,
+            config_changes=changes,
+            config_source=config_source,
         )
 
     summary = render()
@@ -302,6 +378,8 @@ def _render_summary(
     decision: BlockDecision,
     re_review_label: str | None = None,
     override_label: str | None = None,
+    config_changes: list[str] | None = None,
+    config_source: str = "",
 ) -> str:
     return summary_body(
         name=name, result=outcome.result, posted=outcome.posted, unplaced=outcome.unplaced,
@@ -309,6 +387,7 @@ def _render_summary(
         include_diagram=config.include_diagram, review_count=review_count, mention=mention,
         since_last=since_last_block(since), re_review_label=re_review_label, checks=outcome.checks,
         block=decision, agent_prompt=combined_details(tasks), override_label=override_label,
+        config_changes=config_changes, config_source=config_source,
     )  # fmt: skip
 
 
@@ -322,6 +401,7 @@ def _review(
     *,
     local: bool = False,
     progress: TextIO | None = None,
+    source: FileSource | None = None,
 ) -> Outcome:
     index = RepoIndex(repo_root, config.ignored)
     feedback = None
@@ -343,6 +423,7 @@ def _review(
         repo_root=repo_root,
         feedback=feedback,
         prior=prior,
+        source=source,
     )
     result, turns, usage = run_review(
         anthropic.Anthropic(), settings_from_env(), user, Toolbox(repo_root, index),
@@ -353,7 +434,7 @@ def _review(
     outcome.prior = prior
     # A local review has no PR description, so the PR-template check does not apply to it.
     outcome.checks = build_rows(
-        config, result.checks, read_pr_template(repo_root), None if local else pr.body
+        config, result.checks, read_pr_template(source or repo_root), None if local else pr.body
     )
     return outcome
 
@@ -405,12 +486,19 @@ def _git(root: Path, *args: str) -> str:
 def local_main(base: str, repo: str, as_json: bool = False) -> int:
     """Review the current branch. With `as_json`, stdout is one JSON object; progress goes to stderr."""
     root = Path(repo).resolve()
-    config = load_config(root)
     merge_base = _git(root, "merge-base", base, "HEAD")
     if not merge_base:
         return _local_error(f"Cannot find a merge base between {base} and HEAD.", 2, as_json)
+    # Same rule as a PR: settings, rules and context files come from the base ref, not this branch.
+    try:
+        source = CachingSource(GitSource(root, base).verify())
+        config = _load_trusted_config(source)
+    except ConfigSourceError as e:
+        return _local_error(f"Cannot read the review settings from {base}: {e}", 2, as_json)
     diff = _git(root, "diff", "--unified=3", merge_base, "HEAD")
-    patches = [p for p in split_unified_diff(diff) if not config.ignored(p.path)]
+    all_patches = split_unified_diff(diff)
+    changes = config_changes(config, [p for fp in all_patches for p in (fp.path, fp.previous_path)])
+    patches = [p for p in all_patches if not config.ignored(p.path)]
     if not patches:
         if as_json:
             empty = ReviewResult(
@@ -418,7 +506,8 @@ def local_main(base: str, repo: str, as_json: bool = False) -> int:
                 files=[], findings=[],
             )  # fmt: skip
             print(json.dumps(build_report(result=empty, posted=[], unplaced=[], checks=[],
-                                          decision=BlockDecision(blocking=False), tasks=[])))  # fmt: skip
+                                          decision=BlockDecision(blocking=False), tasks=[],
+                                          config_source=source.label, config_changes=changes)))  # fmt: skip
         else:
             print("No changes to review.")
         return 0
@@ -432,7 +521,14 @@ def local_main(base: str, repo: str, as_json: bool = False) -> int:
     )
     try:
         outcome = _review(
-            root, pr, patches, config, gh=None, local=True, progress=sys.stderr if as_json else None
+            root,
+            pr,
+            patches,
+            config,
+            gh=None,
+            local=True,
+            progress=sys.stderr if as_json else None,
+            source=source,
         )
     except ReviewFailed as e:
         return _local_error(f"Review failed: {e}", 1, as_json)
@@ -441,11 +537,13 @@ def local_main(base: str, repo: str, as_json: bool = False) -> int:
     print(f"tokens: {usage_line(outcome.usage)}", file=sys.stderr)
     if as_json:
         print(json.dumps(build_report(result=outcome.result, posted=outcome.posted, unplaced=outcome.unplaced,
-                                      checks=outcome.checks, decision=decision, tasks=tasks)))  # fmt: skip
+                                      checks=outcome.checks, decision=decision, tasks=tasks,
+                                      config_source=source.label, config_changes=changes)))  # fmt: skip
         return EXIT_BLOCKED if decision.blocking else 0
     name = _env("INPUT_NAME", "Code review")
     print(_render_summary(name, outcome, config, pr.head_sha, len(patches), 1, default_mention(name),
-                          since, tasks, decision))  # fmt: skip
+                          since, tasks, decision, config_changes=changes,
+                          config_source=source.label))  # fmt: skip
     for f in outcome.posted:
         print(f"\n--- {f.path}:{f.line}\n{inline_body(f)}")
     return EXIT_BLOCKED if decision.blocking else 0

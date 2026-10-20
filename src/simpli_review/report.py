@@ -38,6 +38,8 @@ def build_report(
     checks: list[CheckRow],
     decision: BlockDecision,
     tasks: list[AgentTask],
+    config_source: str = "",
+    config_changes: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "summary": result.summary,
@@ -49,4 +51,8 @@ def build_report(
         "blocking": decision.blocking,
         "reasons": decision.reasons,
         "agent_prompt": combined_text(tasks) if tasks else "",
+        # Where the settings, rules and context files came from (the base ref, never your working tree),
+        # and which of those files this branch edits (they apply after merge, not to this review).
+        "config_source": config_source,
+        "config_changes": config_changes or [],
     }

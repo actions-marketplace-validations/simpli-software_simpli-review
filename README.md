@@ -144,6 +144,31 @@ Create `.simpli-review/` in the reviewed repository. Every field is optional.
   always given as context. `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md` and `docs/DECISIONS.md` are
   included automatically when present.
 
+### Settings come from the base branch
+
+A pull request can edit any file in it, including these. If the reviewer read its settings from the PR's own
+commit, a PR could set `blockOn` to `none`, add `**` to `ignorePatterns`, rewrite the rules or plant
+instructions in `CLAUDE.md`, and then pass its own review. So in PR mode the reviewer reads all of the
+following from the PR's **base commit** (the tip of the branch the PR merges into), never from the PR:
+
+- `.simpli-review/config.json`, `rules.md` and `files.json`
+- the context files: `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING.md`, `docs/DECISIONS.md` and every file listed in `files.json`
+- `.github/pull_request_template.md` (the `pr-template` check)
+
+The files are fetched with the GitHub contents API at the base commit, using the workflow token (read access to
+contents is enough, and it works with a shallow checkout and `persist-credentials: false`). If the API fails,
+the reviewer uses `git show` when the base commit is in the checkout. If neither works, the review does not run
+and the check **fails** with the reason in the summary and the job log; it never falls back to the PR's copy.
+Re-run the job to try again. The same happens when the base settings are not valid JSON or fail validation.
+
+If a PR changes any of those files, the summary gets a "Configuration changes in this PR" section listing
+them. The changes are reviewed like any other code (the settings that apply to the review can still ignore
+them), and they take effect once the PR is merged, so the next PR is reviewed with the new settings. The
+code under review, the code graph and the tools still see the PR's head.
+
+Scan mode reads the checked-out default branch, which is already the trusted copy. The `local` command reads
+from its `--base` ref (see [Review a branch locally](#review-a-branch-locally)).
+
 ## How it learns
 
 React 👎 on a comment that wasn't useful and 👍 on one that was. On later reviews:
@@ -189,7 +214,8 @@ required status check in branch protection to stop the merge. When `blockOn` is 
 finish (API error such as an empty credit balance, refusal, no result) also turns the check red, so a PR
 never passes without a review; the summary and the job log carry the API's own error message. With the
 default `blockOn: "none"`, or with the override label on the PR, a failed review is a warning and a green
-job. `--dry-run` never fails the job.
+job. The exception is a review that cannot read the [base-branch settings](#settings-come-from-the-base-branch):
+it does not yet know `blockOn` or the override label, so it always fails the check. `--dry-run` never fails the job.
 
 To let one PR through, add the `overrideLabel` label (default `review-override`). The next review does not
 fail, and the summary says the block was overridden and by which label. The label is read from the PR the
@@ -306,6 +332,10 @@ This prints the summary and the inline comments. It doesn't touch GitHub. The PR
 body, so it is skipped here; the other checks and `blockOn` apply, and the command exits non-zero when the review
 would block.
 
+As in PR mode, the settings, rules and context files are read from the `--base` ref with `git show`, not from your
+branch or working tree, so a branch cannot loosen its own review. To try a settings change, merge it into the
+base first. If the ref or the settings cannot be read the command stops with exit code 2.
+
 For agents that review their own branch before opening a PR, add `--json`:
 
 ```bash
@@ -316,7 +346,9 @@ Stdout is exactly one JSON object; progress and token usage go to stderr. Keys: 
 `confidence_reason`, `findings` (each with `severity`, `type`, `category`, `path`, `line`, `end_line`, `title`,
 `body`, `suggestion`, `confidence`, `placement` and `agent_prompt`), `checks` (`name`, `result`, `mode`,
 `reason`), `blocking` (true or false), `reasons` (why it blocks) and `agent_prompt` (all open findings in one
-prompt). The exit code is non-zero when `blocking` is true. If the review cannot run, the object is
+prompt), `config_source` (where the settings came from, for example `origin/main@1a2b3c4`) and
+`config_changes` (settings or context files your branch edits; they are not applied to this review). The exit
+code is non-zero when `blocking` is true. If the review cannot run, the object is
 `{"error": "...", "blocking": false}` and the exit code is 1 (review failed) or 2 (no merge base).
 
 ## Cost and limits

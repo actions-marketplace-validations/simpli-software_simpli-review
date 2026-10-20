@@ -55,7 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # The reviewer reads the code at the PR's head commit.
+      # The reviewer reads the code at the PR's head commit. Its settings, rules and context files come
+      # from the PR's base commit (through the GitHub API), so a PR cannot loosen its own review.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}

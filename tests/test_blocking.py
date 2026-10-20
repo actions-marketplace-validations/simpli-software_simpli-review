@@ -11,6 +11,7 @@ import pytest
 from simpli_review import cli
 from simpli_review.blocking import evaluate, open_tasks
 from simpli_review.config import Config
+from simpli_review.github import GitHubError
 from simpli_review.memory import PriorFinding
 from simpli_review.models import (
     BlockDecision,
@@ -118,6 +119,10 @@ class _GH:
     labels: ClassVar[list[str]] = []
     body: ClassVar[str] = "Fix rounding"
     review_comments: ClassVar[list[dict[str, Any]]] = []
+    base_files: ClassVar[dict[str, str]] = {}  # the base commit's tree: the only trusted settings source
+    changed_files: ClassVar[list[dict[str, Any]]] = []
+    api_error: ClassVar[int | None] = None  # status code every contents-API call fails with
+    client: ClassVar[FakeClient | None] = None  # the scripted Anthropic client of the last run
 
     def __init__(self, *_: Any) -> None:
         pass
@@ -125,12 +130,23 @@ class _GH:
     def pull(self, number: int) -> dict[str, Any]:
         return {
             "title": "Use to_cents", "body": _GH.body, "user": {"login": "dale"}, "draft": False,
-            "base": {"ref": "main"}, "head": {"ref": "fix", "sha": "abc1234"},
+            "base": {"ref": "main", "sha": BASE_SHA}, "head": {"ref": "fix", "sha": "abc1234"},
             "labels": [{"name": n} for n in _GH.labels],
         }  # fmt: skip
 
+    def commit_exists(self, sha: str) -> None:
+        if _GH.api_error:
+            raise GitHubError(_GH.api_error, "boom")
+        assert sha == BASE_SHA
+
+    def file_at(self, path: str, ref: str) -> str | None:
+        if _GH.api_error:
+            raise GitHubError(_GH.api_error, "boom")
+        assert ref == BASE_SHA
+        return _GH.base_files.get(path)
+
     def pull_files(self, number: int) -> list[dict[str, Any]]:
-        return [{"filename": "app/billing.py", "patch": PATCH, "status": "modified"}]
+        return _GH.changed_files or [{"filename": "app/billing.py", "patch": PATCH, "status": "modified"}]
 
     def recent_repo_review_comments(self) -> list[dict[str, Any]]:
         return []
@@ -157,28 +173,47 @@ class _GH:
         pass
 
 
+BASE_SHA = "b" * 40
+
+
 def _run(
     monkeypatch: pytest.MonkeyPatch,
     repo: Path,
     *,
     config: dict[str, Any] | None = None,
+    base_files: dict[str, str] | None = None,
+    head_files: dict[str, str] | None = None,
+    changed_files: list[dict[str, Any]] | None = None,
+    api_error: int | None = None,
     review: dict[str, Any] | None = None,
     responses: list[Any] | None = None,
     labels: list[str] | None = None,
     body: str = "Fix rounding",
     review_comments: list[dict[str, Any]] | None = None,
     dry_run: bool = False,
+    event_name: str = "pull_request",
+    event_body: dict[str, Any] | None = None,
 ) -> int:
     _GH.calls, _GH.labels, _GH.body = {}, labels or [], body
     _GH.review_comments = review_comments or []
+    # Settings come from the base commit; whatever is in the checked-out workspace is the PR's head.
+    _GH.base_files = dict(base_files or {})
+    _GH.changed_files, _GH.api_error = changed_files or [], api_error
     if config is not None:
-        (repo / ".simpli-review").mkdir(exist_ok=True)
-        (repo / ".simpli-review" / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        _GH.base_files[".simpli-review/config.json"] = json.dumps(config)
+    for rel, text in (head_files or {}).items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8")
     event = repo / "event.json"
-    event.write_text(json.dumps({"action": "opened", "pull_request": {"number": 7}}), encoding="utf-8")
+    event.write_text(
+        json.dumps(
+            event_body or {"action": "opened", "pull_request": {"number": 7, "base": {"sha": BASE_SHA}}}
+        ),
+        encoding="utf-8",
+    )
     env = {
         "GITHUB_EVENT_PATH": str(event),
-        "GITHUB_EVENT_NAME": "pull_request",
+        "GITHUB_EVENT_NAME": event_name,
         "GITHUB_REPOSITORY": "a/b",
         "GITHUB_WORKSPACE": str(repo),
         "GITHUB_TOKEN": "x",
@@ -192,7 +227,8 @@ def _run(
         else [message(tool_use("t1", "submit_review", review or _review([])))]
     )
     monkeypatch.setattr(cli, "GitHub", _GH)
-    monkeypatch.setattr(anthropic, "Anthropic", lambda: FakeClient(script))
+    _GH.client = FakeClient(script)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: _GH.client)
     return cli._github_run(dry_run)
 
 
@@ -262,12 +298,12 @@ def test_failed_error_check_blocks_and_warning_does_not(monkeypatch, repo):
 
 
 def test_pr_template_check_uses_the_repo_template_and_the_pr_body(monkeypatch, repo):
-    (repo / ".github").mkdir()
-    (repo / ".github" / "pull_request_template.md").write_text("## Summary\n\n## Tests\n", encoding="utf-8")
+    template = {".github/pull_request_template.md": "## Summary\n\n## Tests\n"}
     config = {"builtinChecks": {"pr-template": "error", "declared-scope": "off"}}
-    assert _run(monkeypatch, repo, config=config, body="## Summary\nDone.") == 1
+    assert _run(monkeypatch, repo, config=config, base_files=template, body="## Summary\nDone.") == 1
     assert "| `pr-template` | ❌ Fail | error | Missing: Tests. |" in _GH.calls["summary"]
-    assert _run(monkeypatch, repo, config=config, body="## Summary\nDone.\n## Tests\nNone") == 0
+    body = "## Summary\nDone.\n## Tests\nNone"
+    assert _run(monkeypatch, repo, config=config, base_files=template, body=body) == 0
     assert "| `pr-template` | ✅ Pass | error |" in _GH.calls["summary"]
 
 
@@ -328,9 +364,9 @@ def _local(monkeypatch: pytest.MonkeyPatch, repo: Path, review: dict[str, Any], 
 
 
 def test_local_json_is_one_object_on_stdout_and_exits_nonzero_when_blocking(monkeypatch, repo, capsys):
-    _branch(repo)
     (repo / ".simpli-review").mkdir()
     (repo / ".simpli-review" / "config.json").write_text(json.dumps({"blockOn": "P1"}), encoding="utf-8")
+    _branch(repo)  # the config is committed on main, the base of the review
     verdict = {"name": "declared-scope", "result": "fail", "reason": "Adds an env var."}
     review = {
         **_review([_finding(line=5, suggestion="    cents = to_cents(abs(amount))")]),
@@ -379,9 +415,9 @@ def test_local_without_json_keeps_the_human_output(monkeypatch, repo, capsys):
 
 
 def test_local_human_mode_also_fails_when_blocking(monkeypatch, repo, capsys):
-    _branch(repo)
     (repo / ".simpli-review").mkdir()
     (repo / ".simpli-review" / "config.json").write_text(json.dumps({"blockOn": "P1"}), encoding="utf-8")
+    _branch(repo)
     assert _local(monkeypatch, repo, _review([_finding()])) == 1
     assert "### ⛔ Merge blocked" in capsys.readouterr().out
 

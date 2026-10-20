@@ -75,6 +75,8 @@ def summary_body(
     block: BlockDecision | None = None,
     agent_prompt: str = "",
     override_label: str | None = None,
+    config_changes: list[str] | None = None,
+    config_source: str = "",
 ) -> str:
     score = result.confidence_score
     lines = [SUMMARY_MARKER, f"## {name}", ""]
@@ -89,6 +91,8 @@ def summary_body(
     ]
     if since_last:
         lines += [since_last, ""]
+    if config_changes:
+        lines += [config_changes_notice(config_changes, config_source), ""]
     if checks:
         lines += [checks_table(checks), ""]
     counts = {s: sum(1 for f in posted + unplaced if f.severity == s) for s in Severity}
@@ -136,6 +140,18 @@ def checks_table(rows: list[CheckRow]) -> str:
     for r in rows:
         lines.append(f"| `{_cell(r.name)}` | {_CHECK_RESULT[r.result]} | {r.mode} | {_cell(r.reason)} |")
     return "\n".join(lines)
+
+
+def config_changes_notice(paths: list[str], source: str) -> str:
+    """This PR edits files that steer reviews. They are reviewed like any change but not applied to it."""
+    names = ", ".join(f"`{p.replace('`', '')}`" for p in paths)
+    where = f" (`{source.replace('`', '')}`)" if source else ""
+    return "\n".join([
+        "### Configuration changes in this PR", "",
+        f"This PR changes files that control how reviews run: {names}. The changes apply after the PR is "
+        "merged. They were not used for this review: the settings, rules and context files came from "
+        f"the base branch{where}.",
+    ])  # fmt: skip
 
 
 def block_notice(

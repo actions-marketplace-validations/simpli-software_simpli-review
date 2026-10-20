@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from simpli_review.checks import prompt_section as checks_prompt
 from simpli_review.config import Config
+from simpli_review.config_source import ConfigSourceError, DirSource, FileSource
 from simpli_review.diff import FilePatch, nearest_commentable
 from simpli_review.index import RepoIndex, Symbol
 from simpli_review.learning import Feedback, similarity, words
@@ -133,8 +134,12 @@ class ReviewFailed(Exception):
 # ---------- prompt building ----------
 
 
-def repo_context_parts(config: Config, repo_root: Path, paths: list[str]) -> list[str]:
-    """Team instructions, the rules that apply to `paths`, and the context files (CLAUDE.md...)."""
+def repo_context_parts(
+    config: Config, repo_root: Path, paths: list[str], source: FileSource | None = None
+) -> list[str]:
+    """Team instructions, the rules that apply to `paths`, and the context files (CLAUDE.md...).
+    Context files are read from `source` (the PR's base commit in PR mode), else from `repo_root`."""
+    source = source or DirSource(repo_root)
     parts: list[str] = []
     rules = config.rules_for(paths)
     if config.instructions.strip():
@@ -145,7 +150,7 @@ def repo_context_parts(config: Config, repo_root: Path, paths: list[str]) -> lis
             + "\n".join(f"- [{r.id}] ({r.severity}; {', '.join(r.scope)}) {r.rule}" for r in rules)
         )
     for cf in config.files:
-        text = _read_capped(repo_root / cf.path, MAX_CONTEXT_FILE_CHARS)
+        text = _read_capped(source, cf.path, MAX_CONTEXT_FILE_CHARS)
         if text:
             desc = f" - {cf.description}" if cf.description else ""
             parts.append(f"## Context file: {cf.path}{desc}\n{text}")
@@ -161,10 +166,11 @@ def build_user_message(
     repo_root: Path,
     feedback: Feedback | None,
     prior: list[PriorFinding] | None = None,
+    source: FileSource | None = None,
 ) -> list[dict[str, Any]]:
     """Two blocks: stable repo context first (cacheable across re-reviews),
     then the PR itself."""
-    repo_parts = repo_context_parts(config, repo_root, [p.path for p in patches])
+    repo_parts = repo_context_parts(config, repo_root, [p.path for p in patches], source)
     if feedback:
         section = feedback.prompt_section()
         if section:
@@ -237,10 +243,10 @@ def _annotated_diffs(patches: list[FilePatch]) -> tuple[str, list[str]]:
     return "\n\n".join(chunks), omitted
 
 
-def _read_capped(path: Path, limit: int) -> str:
+def _read_capped(source: FileSource, path: str, limit: int) -> str:
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        text = source.read(path) or ""
+    except ConfigSourceError:
         return ""
     return text if len(text) <= limit else text[:limit] + "\n... (truncated)"
 

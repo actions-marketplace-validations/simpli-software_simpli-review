@@ -1,4 +1,5 @@
-"""Per-repository configuration, read from the repo under review.
+"""Per-repository configuration, read from the repo under review (from the PR's base commit in PR mode;
+see config_source.py).
 
 Layout (docs/HOW_IT_WORKS.md):
 
@@ -13,11 +14,13 @@ from __future__ import annotations
 
 import fnmatch
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from simpli_review.config_source import ConfigSourceError, DirSource, FileSource, clean_path
 from simpli_review.models import (
     MAX_CHECK_INSTRUCTIONS,
     MAX_CHECK_NAME,
@@ -28,6 +31,8 @@ from simpli_review.models import (
 )
 
 CONFIG_DIR = ".simpli-review"
+CONFIG_FILES = ("config.json", "rules.md", "files.json")
+TEMPLATE_PATH = ".github/pull_request_template.md"
 AutoReview = Literal["open", "push"]
 BlockOn = Literal["none", "P0", "P1"]
 BUILTIN_CHECKS = ("pr-template", "declared-scope")
@@ -200,21 +205,54 @@ def match_glob(path: str, pattern: str) -> bool:
 
 
 def load_config(repo_root: Path) -> Config:
-    folder = repo_root / CONFIG_DIR
+    """Settings from the files on disk. For a pull request use load_config_from(open_base_source(...))."""
+    return load_config_from(DirSource(repo_root))
+
+
+def load_config_from(source: FileSource) -> Config:
     raw: dict[str, object] = {}
-    if (folder / "config.json").is_file():
-        raw = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+    text = source.read(f"{CONFIG_DIR}/config.json")
+    if text is not None:
+        raw = json.loads(text)
     config = Config.model_validate(raw)
-    if (folder / "rules.md").is_file():
-        extra = (folder / "rules.md").read_text(encoding="utf-8").strip()
-        config.instructions = f"{config.instructions}\n\n{extra}".strip()
-    if (folder / "files.json").is_file():
-        listed = json.loads((folder / "files.json").read_text(encoding="utf-8"))
+    extra = source.read(f"{CONFIG_DIR}/rules.md")
+    if extra is not None and extra.strip():
+        config.instructions = "\n\n".join(p for p in (config.instructions, extra.strip()) if p)
+    listed_text = source.read(f"{CONFIG_DIR}/files.json")
+    if listed_text is not None:
+        listed = json.loads(listed_text)
         config.files += [ContextFile.model_validate(f) for f in listed.get("files", [])]
     known = {f.path for f in config.files}
     config.files += [
         ContextFile(path=p, description="project conventions")
         for p in DEFAULT_CONTEXT_FILES
-        if p not in known and (repo_root / p).is_file()
+        if p not in known and _exists(source, p)
     ]
     return config
+
+
+def _exists(source: FileSource, path: str) -> bool:
+    try:
+        return source.read(path) is not None
+    except ConfigSourceError:
+        return False
+
+
+def controlling_paths(config: Config) -> list[str]:
+    """Every file whose content steers a review. A PR that edits one of these changes how the
+    repository is reviewed after it merges, but not how this PR is reviewed."""
+    paths = [f"{CONFIG_DIR}/{name}" for name in CONFIG_FILES]
+    paths += [*DEFAULT_CONTEXT_FILES, TEMPLATE_PATH]
+    paths += [cf.path for cf in config.files]
+    out: list[str] = []
+    for p in paths:
+        cleaned = clean_path(p)
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+    return out
+
+
+def config_changes(config: Config, changed: Iterable[str | None]) -> list[str]:
+    """The controlling files among the paths a PR touches (new, old and renamed names), in a stable order."""
+    touched = {c for c in (clean_path(p) for p in changed if p) if c}
+    return [p for p in controlling_paths(config) if p in touched]

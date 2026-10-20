@@ -119,7 +119,7 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> type[_Recorder]:
 
 def test_label_is_removed_after_a_normal_run(monkeypatch, tmp_path, recorder):
     _env(monkeypatch, tmp_path, _labeled("re-review", 9))
-    monkeypatch.setattr(cli, "_github_run", lambda dry_run: 0)
+    monkeypatch.setattr(cli, "_github_run", lambda dry_run, loaded=None: 0)
     assert cli.github_main(dry_run=False) == 0
     assert recorder.removed == [(9, "re-review")]
 
@@ -127,7 +127,7 @@ def test_label_is_removed_after_a_normal_run(monkeypatch, tmp_path, recorder):
 def test_label_is_removed_even_when_the_run_raises(monkeypatch, tmp_path, recorder):
     _env(monkeypatch, tmp_path, _labeled("re-review", 9))
 
-    def boom(dry_run: bool) -> int:
+    def boom(dry_run: bool, loaded: Any = None) -> int:
         raise RuntimeError("review blew up")
 
     monkeypatch.setattr(cli, "_github_run", boom)
@@ -138,7 +138,7 @@ def test_label_is_removed_even_when_the_run_raises(monkeypatch, tmp_path, record
 
 def test_label_is_kept_on_dry_run_and_for_other_events(monkeypatch, tmp_path, recorder):
     _env(monkeypatch, tmp_path, _labeled("re-review", 9))
-    monkeypatch.setattr(cli, "_github_run", lambda dry_run: 0)
+    monkeypatch.setattr(cli, "_github_run", lambda dry_run, loaded=None: 0)
     cli.github_main(dry_run=True)
     _env(monkeypatch, tmp_path, _labeled("bug", 9))
     cli.github_main(dry_run=False)
@@ -155,7 +155,7 @@ def test_label_removal_failure_does_not_fail_the_run(monkeypatch, tmp_path):
             raise GitHubError(500, "boom")
 
     monkeypatch.setattr(cli, "GitHub", Failing)
-    monkeypatch.setattr(cli, "_github_run", lambda dry_run: 0)
+    monkeypatch.setattr(cli, "_github_run", lambda dry_run, loaded=None: 0)
     assert cli.github_main(dry_run=False) == 0
 
 
