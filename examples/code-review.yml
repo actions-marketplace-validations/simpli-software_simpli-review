@@ -1,8 +1,7 @@
 # Copy to .github/workflows/code-review.yml in each repository to review.
 # Needs one secret: ANTHROPIC_API_KEY (repo or organization secret).
-# Replace <owner> and <commit-sha> with the account that hosts the action and the full commit hash
-# of the release you want, and keep the version in the trailing comment (see README, "Add it to a
-# repository"). Pin by hash, never by tag.
+# Replace <commit-sha> with the full commit hash of the release you want, and keep the version in
+# the trailing comment (see README, "Add it to a repository"). Pin by hash, never by tag.
 #
 # A review runs when a PR is opened, reopened or marked ready for review.
 # To ask for another review, add the `re-review` label to the PR. The reviewer
@@ -55,7 +54,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 50          # some history for the git_history tool
           persist-credentials: false
-      - uses: <owner>/simpli-review@<commit-sha> # v1.x
+      - uses: simpli-software/simpli-review@<commit-sha> # v1.x
         with:
           name: Code Review       # summary heading
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

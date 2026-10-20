@@ -1,5 +1,5 @@
-name: AI code review
-description: Reviews a pull request with whole-codebase context, or (mode scan) scans the whole repository for security problems.
+name: Simpli Gatehouse Review
+description: "Gatehouse review gate: whole-codebase AI review of each pull request, or (mode scan) a whole-repository security scan."
 branding:
   icon: eye
   color: purple
